@@ -1,12 +1,312 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>CS184 Final Project Writeup</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>CS184 Final Project Writeup</title>
+  <script src="https://code.jquery.com/jquery-3.1.1.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/semantic-ui@2.4.2/dist/semantic.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/semantic-ui@2.4.2/dist/semantic.min.js"></script>
+  <style>
+    body {
+      padding-left: 10%;
+      padding-right: 10%;
+    }
+  </style>
 </head>
+
 <body>
-    
+  <h1 align="center">CS814: Point Cloud to Mesh</h1>
+  <h4 align="center">By Stanley Huang, Kevin Liu, Eric Li</h4>
+  <div class="ui segment">
+    <h2>Abstract</h2>
+    <p>A common way of producing accurate and realistic 3D meshes and models is to use scanned data of the object you
+      are trying to reproduce. Our project concerns itself with the important challenge of translating scanned points on
+      an object's surface to an accurate 3D mesh that can be rendered digitally. To do this, we aim to create a program
+      that takes in set of points in 3D space and outputs an appropriate mesh file that approximates the body of the
+      originally sampled 3D object. To achieve this, we plan to implement the Ball Pivoting Algorithm
+      <a href="https://web.archive.org/web/20170703143109/http://www.research.ibm.com/vistechnology/pdf/bpa_tvcg.pdf">(described
+        here)</a>
+      to construct the mesh from the set of sampled points. </p>
+  </div>
+
+
+  <h2>Technical Approach</h2>
+  <p>Our technical approach consists of three major parts: Input Preprocessing, The Ball Pivot Algorithm, and The Real
+    Time Visualizer</p>
+  <div class="ui segment">
+    <h3>Input Preprocessing</h3>
+    <div class="ui grid">
+      <div class="row">
+        <div class="eight wide column">
+          <p>
+            Most of the 3D point data gathered was gathered online from 3D reconstructions published on the Stanford 3D
+            Scanning Repository (<a href="http://graphics.stanford.edu/data/3Dscanrep/">here</a>). The file format of
+            these reconstructions are <code>.ply</code>, which contain a list of vertex coordinates and a list of faces,
+            with each face containing the indices of 3 vertices. On the right, we can see an example of a
+            <code>.ply</code> file. The first three numbers of each vertex are the coordinates, while the last three
+            numbers of each face are the indices of each vertex that make up the face.
+          </p>
+
+        </div>
+        <div class="eight wide column">
+          <pre>
+    ply
+    ...
+    end_header
+    # vertices
+    -0.0378297 0.12794 0.00447467 0.850855 0.5 
+    -0.0447794 0.128887 0.00190497 0.900159 0.5 
+    -0.0680095 0.151244 0.0371953 0.398443 0.5 
+    -0.0251078 0.125921 0.00624226 0.711533 0.5 
+    # faces
+    3 20399 21215 21216 
+    3 14838 9280 9186 
+    3 5187 13433 16020 
+    3 5187 16020 16021 
+    3 21003 20920 20919 
+              </pre>
+        </div>
+      </div>
+      <div class="row">
+        <div class="eight wide column">
+          <p>
+            The ball pivot algorithm requires not only the vertex coordinates but also the vertex normals. In the paper
+            we referenced in the abstract, they found the vertex normals by estimating them. However to avoid too much
+            complexity, we instead reversed engineered the face data in the <code>.ply</code> files to reconstruct the
+            vertex normals. Here is what an input file that we would feed to out ball pivot algorithm would look like
+            (formatted in <code>.txt</code>).
+          </p>
+          <p>
+            We found the normals for each vertex by calculating the average area-weighted face normals, similar to what
+            we implement in Project 2. The input file contains six numbers three for the position and three for the
+            normal vector
+          </p>
+        </div>
+        <div class="eight wide column">
+          <pre>
+-0.756594 2.5588 0.0894934 0.19456 0.97263 -0.12695
+-0.89558804 2.57774 0.0380994 0.19886 0.95394 -0.2246
+-1.36019 3.02488 0.74390596 0.052237 0.8016909 0.595451
+-0.0457482 2.6030002 0.464402 -0.05499820 0.97050 0.234723
+...
+          </pre>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="ui segment">
+    <h3>Ball Pivot Algorithm</h3>
+    <p>The ball pivot algorithm's basic idea is relatively intuitive. We simply simulate a ball (of some radius that we
+      specify) rolling over our point cloud, outputing each face it rolls into.</p>
+    <div class="ui grid">
+      <div class="row">
+        <div class="eight wide column">
+          <h4>Data Structures</h4>
+          <p>Here are the structures that our algorithm will use:</p>
+          <ul>
+            <li>For <code>Vertex</code>, it contains both its position and normal. It also stores
+              a boolean that tells us if a vertex is apart of the current mesh or not.
+            </li>
+            <li>For <code>Face</code>, it contains pointers to three vertices, as well as the
+              position of the ball, if it were to sit on this face (for bpa). It also stores its own face normal
+              One thing to note is that the order of the vertices a, b, c maintain the same winding order among the
+              faces in the mesh.</li>
+            <li>Similarly the <code>Edge</code> struct contains pointers to its two end vertices, as well as pointers
+              to its two possible adjacent faces. </li>
+          </ul>
+          <p><b>The Edge Front</b>, <code>F</code>: A queue of edges to be pivoted over. Gernerally, evertime a new
+            triangle is added to the current mesh its exposed edges are added to the front. Also, everytime an edge has
+            been pivoted over, that edge will be popped from the front. In theory, all edges on the front are edges that
+            only have the one face associated with them and are waiting to find the second face. (i.e the f1 attribute
+            should be filled, will the f2 attribute should be still null)</p>
+        </div>
+        <div class="eight wide column">
+          <pre>
+struct Vertex {
+  bool used;
+  Vector3D position;
+  Vector3D normal;
+};
+struct Face {
+  VertexP* a;
+  VertexP* b;
+  VertexP* c;
+  Vector3D ball_center;
+  Vector3D normal;
+};
+struct Edge {
+  VertexP* a;
+  VertexP* b;
+  FaceP* f1;
+  FaceP* f2;
+};
+          </pre>
+        </div>
+      </div>
+      <div class="row">
+        <div class="four wide column"></div>
+        <div class="eight wide column">
+          <h4>Algorithm</h4>
+          The basic skeleton of the algorithm is as follows:
+          <pre>
+      1. while (true)
+      2.    while (e(i,j) = get_active_edge(F))
+      3.       if (k = ball_pivot(e(i,j)) && (not_used(k) || on_front(k)))
+      4.          output_triangle(i, k, j)
+      5.          join(e(i,j), k , F)
+      6 .         if (e(k,i) in F) glue(e(i,k), e(k,i), F)
+      7 .         if (e(j,k) in F) glue(e(k,j), e(j,k), F)
+      8 .      else
+      9 .         mark as boundary(e(i,j))
+      10.   if ((i, j, k) = find seed triangle())
+      11.     output triangle(i, j, k)
+      12.     insert edge(e(i,j), F)
+      13.     insert edge(e(j,k), F)
+      14.     insert edge(e(k,i), F)
+      15.   else
+      16.     return
+          </pre>
+
+        </div>
+        <div class="four wide column"></div>
+
+      </div>
+      <div class="row">
+        <div class="eight wide column">
+          <h4>Part 1: VoxelMap</h4>
+          <p>
+            Given that these point clouds contain a potentially very large number of vertices,
+            our ball pivot algorithm, first and foremost, requires a way to efficiently lookup
+            nearby vertices by location. Our VoxelMap structure will achieve this by grouping vertices
+            by cubic volumes or voxels in a vector (similar to what we did in the Cloth Simulation Project) and putting
+            each
+            vector in an <code>unordered_map&ltint, vector*&gt</code>, so that we can index into a specific cubic volume
+            in constant time.
+          </p>
+          <p>
+            Thus, given a location (x, y, z), we find all vertices within the same voxel, by flooring dividing and
+            multiplying
+            the length of the voxel to get the corner coordinates of the voxel. Then, we hash these corner coordinates
+            to an
+            integer: <br> <code>hash_key = prime_1 * x + prime_2 * y + prime_3 * z</code> <br>
+            The vector of vertices is indexed at hash_key for that specific voxel.
+          </p>
+          <p>On the right we have a picture of a point cloud with a single voxel highlighted in green (the bottom leg)
+          </p>
+        </div>
+        <div class="eight wide column">
+          <img src="images/one_voxel.png" alt="">
+        </div>
+
+      </div>
+      <div class="row">
+        <div class="eight wide column">
+          <h4>Part 2: Find Seed Triangle</h4>
+          <p>The seed triangle is the initial triangle that the ball pivot algorithm starts from. Our goal is to find
+            three points such that when a ball is sitting on top of the three points, no other vertex lies within the
+            ball.
+          </p>
+          <span>To find this triangle we use the following steps</span>
+          <ol>
+            <li>We iterate through a list that contains every vertex starting at index <code>v_index = 0</code></li>
+            <li>
+              For each vertex in this list, we find the first one vertex that isn't used. If the vertex is used, then
+              increment <code>v_index</code>, so next time we call this function we don't have to reiterate over already
+              used vertices.
+            </li>
+            <li>
+              For each unused vertex <code>vertex</code>, we find its neighbors using the voxelMap. We retrieve pairs
+              <code>(n1, n2)</code> of vertices within the neighbors list. For the triangle <code>vertex, n1, n2</code>,
+              find the <code>center</code> of the its resting ball (<a
+                href="https://stackoverflow.com/questions/11719168/how-do-i-find-the-sphere-center-from-3-points-and-radius">using
+                this</a>).
+            </li>
+            <li>
+              Iterate through <code>center</code>'s neighbors to check if any point lies within its radius. If the ball
+              is empty use <code>vertex, n1, n2</code> as our seed triangle. Also check if this ball's center is aligned
+              with the vertex normals, to see if it is lying on the right side of the mesh.
+            </li>
+          </ol>
+        </div>
+        <div class="eight wide column">
+          <h4>Part 3: Ball Pivot</h4>
+          <p>Given that our ball is pivoting over edge <code>e</code>, our ball pivot returns a candidate vertex, where
+            the triangle contaning <code>e->a, e->b, candidate</code> is a valid face of the mesh.</p>
+          <p>To simulate a pivot over the edge <code>e</code>, we mark the midpoint of the edge, <code>m</code>,
+            as the anchor of rotation and the distance from edge's previous face's ball center, <code>e->f1->ball_center
+            as the radius of our rotation.</code></p> Thus, a circle centered on <code>m</code> with radius
+          <code>|e->f1->ball_center - m|</code> that lies on a plane perpendicular to edge <code>e</code>, describes all
+          the possible new centers that our ball can pivot to.
+          <p>Thus, for each <code>candidate</code> vertex in the neighboring vertices of <code>m</code>, we
+            intersect the circle on <code>m</code> with the set of vertices that are <code>radius</code> distant from
+            the <code>candidate</code>, (a sphere), to find the new ball's possible center. We then do similar checks to
+            see if the new ball contains any points, and if it is aligned with the vertex normals.</p>
+        </div>
+      </div>
+      <div class="row">
+        <div class="eight wide column">
+          <h4>Part 4: Join and Glue</h4>
+          <p>Join and Glue are the operations that handle connections with the actual mesh.</p>
+          <ul>
+            <li><b>Join:</b> Given <code>e(i, j)</code> and vertex <code>k</code>, such that <code>(i, j, k)</code> make
+              up a valid triangle in our current mesh, we join them by adding the newly formed edges
+              <code>e(j, k), e(k, i)</code> to the edge front.</li>
+            <li><b>Glue:</b> When our candidate <code>k</code> forms a valid triangle with our edge <code>e(i, j)</code>
+              but is already a part of the front, it is possible that either of our two new edges
+              <code>e(j, k), e(k, i)</code> from the join operation could already be in the front (but in reversed order
+              due to consistent winding order). Glue gets rid of these potential duplicates, essentially 'glueing' the
+              two duplicate edges together.</li>
+          </ul>
+        </div>
+        <div class="eight wide column">
+          <h4>Pivot 2D</h4>
+          <img src="images/2D_pivot.png" alt="" style="width:70%">
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="ui segment">
+    <h3>Real Time Visualizer</h3>
+    <p>
+      Our visualizer used the rendering code from Project 2 Meshedit, but refactored in a way that it could handle our
+      input formats. Our visualizer can render the point cloud, as white points and red lines as the mesh wireframe. We
+      trigger the start of the mesh reconstruction through a key event, which starts a new thread designated for the
+      ball pivot algorithm. Thus, we have two threads, the renderer thread and the reconstruction thread, as well as a
+      shared list of edges that need to be rendered, which is protected by a mutex lock. Everytime our reconstuction
+      outputs a triangle, it adds its edges to the shared list.
+    </p>
+    <h4>Check out real time viewer in this video:</h4>
+    <iframe width="966" height="543" src="https://www.youtube.com/embed/zDEey3fGz6E" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+
+  </div>
+  <h2>Results</h2>
+  <p>Our implementation was able to achieve a watertight mesh for simple objects like an isododecahedron:</p>
+  <div class="ui grid">
+    <div class="eight wide column">
+      <img src="images/iso_points.png" alt="" style="width:100%">
+    </div>
+    <div class="eight wide column">
+      <img src="images/iso_edges.png" alt="" style="width:100%">
+    </div>
+  </div>
+  <p>However for more complex objects, watertight meshes were very hard to achieve, especially since our implementation
+    can only utilize one pass with one radius.</p>
+  <div class="ui grid">
+    <div class="eight wide column">
+      <img src="images/bunny_pts.png" style="width:100%">
+    </div>
+    <div class="eight wide column">
+      <img src="images/bunny_reconstructed.png" alt="" style="width:100%">
+    </div>
+  </div>
+
+
+
 </body>
+
 </html>
